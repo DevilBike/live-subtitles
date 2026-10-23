@@ -18,17 +18,29 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import dev.bike.livesubs.BuildConfig
 import dev.bike.livesubs.MainActivity
 import dev.bike.livesubs.R
+import dev.bike.livesubs.asr.LatencyStats
+import dev.bike.livesubs.asr.ModelStore
+import dev.bike.livesubs.asr.RecognizerStatus
+import dev.bike.livesubs.asr.SourceLanguage
+import dev.bike.livesubs.asr.SubtitleUpdate
+import dev.bike.livesubs.asr.WhisperModel
+import dev.bike.livesubs.asr.WhisperRecognizer
 import dev.bike.livesubs.audio.AudioFrame
 import dev.bike.livesubs.audio.PlaybackAudioSource
 import dev.bike.livesubs.audio.slidingWindows
+import dev.bike.livesubs.translate.MlKitTranslator
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
@@ -36,14 +48,15 @@ import kotlinx.coroutines.launch
  * Foreground service that owns the MediaProjection for as long as subtitles are on.
  *
  * It captures playback audio, publishes the live level for the app's meter,
- * and feeds overlapping windows towards the recognizer:
- *   PlaybackAudioSource -> slidingWindows -> StreamingRecognizer (step 3) -> SubtitleOverlay (step 4)
+ * runs the recognizer and publishes its subtitles for the app screen and the
+ * notification:
+ *   PlaybackAudioSource -> slidingWindows -> WhisperRecognizer -> SubtitleOverlay (step 4)
  */
 class CaptureService : LifecycleService() {
 
     private var projection: MediaProjection? = null
     private var captureJob: Job? = null
-    private var hearingAudio: Boolean? = null
+    @Volatile private var hearingAudio = false
     private var lastLoudMs = 0L
 
     private val projectionCallback = object : MediaProjection.Callback() {
@@ -79,40 +92,72 @@ class CaptureService : LifecycleService() {
             return START_NOT_STICKY
         }
 
+        val model = WhisperModel.entries.firstOrNull { it.name == intent?.getStringExtra(EXTRA_MODEL) }
+        val source = SourceLanguage.entries.firstOrNull { it.name == intent?.getStringExtra(EXTRA_SOURCE) }
+        if (model == null || source == null || !ModelStore.isReady(this, model, source)) {
+            Log.w(TAG, "Started without a downloaded model")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         val mpm = getSystemService(MediaProjectionManager::class.java)
         projection = mpm.getMediaProjection(resultCode, data)?.also {
             it.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
             _running.value = true
-            onProjectionReady(it)
+            onProjectionReady(it, model, source)
         }
         if (projection == null) stopSelf()
 
         return START_NOT_STICKY
     }
 
-    private fun onProjectionReady(projection: MediaProjection) {
-        Log.i(TAG, "MediaProjection ready, starting playback capture")
+    private fun onProjectionReady(projection: MediaProjection, model: WhisperModel, source: SourceLanguage) {
+        Log.i(TAG, "MediaProjection ready, starting playback capture with ${model.fileName} for $source")
+        val translator = if (source.usesTranslator) MlKitTranslator() else null
+        val recognizer = WhisperRecognizer(
+            modelFile = ModelStore.modelFile(this, model),
+            vadFile = ModelStore.vadFile(this),
+            armArch = BuildConfig.WHISPER_ARM_ARCH,
+            source = source,
+            translator = translator,
+        )
         captureJob = lifecycleScope.launch {
+            launch { recognizer.status.collect { _recognizerStatus.value = it } }
+            launch { recognizer.latency.collect { _latency.value = it } }
+            launch { updateNotificationWithSubtitles() }
             try {
-                PlaybackAudioSource(projection).frames()
+                val windows = PlaybackAudioSource(projection).frames()
                     .onEach { onFrame(it) }
                     .slidingWindows()
-                    // The recognizer may be slower than one hop; always hand it the newest window.
-                    .conflate()
-                    .collect { window ->
-                        // TODO(step 3): StreamingRecognizer.subtitles(windows)
-                        // TODO(step 4): SubtitleOverlay.show() and render recognizer updates
+                    .onEach { window ->
                         _windowCount.value++
                         _windowSeconds.value = window.durationMs / 1000f
                     }
+                    // Keep capture and buffering off the main thread and never blocked by the recognizer.
+                    .flowOn(Dispatchers.Default)
+                    // The recognizer may be slower than one hop; always hand it the newest window.
+                    .conflate()
+                recognizer.subtitles(windows).collect { update ->
+                    // TODO(step 4): SubtitleOverlay.show() and render(update)
+                    _subtitles.value = update
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "Playback capture failed", e)
-                _captureError.value = e.message ?: e.javaClass.simpleName
-                stopSelf()
+                fail(e)
+            } catch (e: LinkageError) {
+                // The native library failed to load: report it rather than crash.
+                fail(e)
+            } finally {
+                translator?.close()
             }
         }
+    }
+
+    private fun fail(e: Throwable) {
+        Log.e(TAG, "Capture or recognition failed", e)
+        _captureError.value = e.message ?: e.javaClass.simpleName
+        stopSelf()
     }
 
     private fun onFrame(frame: AudioFrame) {
@@ -120,13 +165,36 @@ class CaptureService : LifecycleService() {
         _levelDb.value = db
         val now = frame.startMs
         if (db > AudioFrame.SILENCE_DB) lastLoudMs = now
-        // Hysteresis so the notification only changes on real transitions, not every quiet frame.
-        val hearing = now - lastLoudMs < SILENCE_HOLD_MS
-        if (hearing != hearingAudio) {
-            hearingAudio = hearing
-            val text = getString(if (hearing) R.string.notification_hearing else R.string.notification_silent)
-            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+        // Hysteresis so the hearing state only changes on real transitions, not every quiet frame.
+        hearingAudio = now - lastLoudMs < SILENCE_HOLD_MS
+    }
+
+    /**
+     * Shows the newest subtitle text in the notification, or whether audio is
+     * coming through while there is none. At most once a second, since Android
+     * rate-limits notification updates.
+     */
+    private suspend fun updateNotificationWithSubtitles() {
+        var shown: String? = null
+        while (true) {
+            val subtitle = _subtitles.value?.let { "${it.committed} ${it.tentative}".trim() }.orEmpty()
+            val text = when {
+                subtitle.isNotEmpty() -> subtitle.takeLastWords(NOTIFICATION_CHARS)
+                hearingAudio -> getString(R.string.notification_hearing)
+                else -> getString(R.string.notification_silent)
+            }
+            if (text != shown) {
+                shown = text
+                getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+            }
+            delay(1_000)
         }
+    }
+
+    private fun String.takeLastWords(maxChars: Int): String {
+        if (length <= maxChars) return this
+        val cut = indexOf(' ', length - maxChars)
+        return "…" + if (cut < 0) takeLast(maxChars) else substring(cut + 1)
     }
 
     override fun onDestroy() {
@@ -155,6 +223,7 @@ class CaptureService : LifecycleService() {
             .setSmallIcon(R.drawable.ic_subtitles)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setOnlyAlertOnce(true)
             .setContentIntent(openApp)
             .addAction(0, getString(R.string.stop), stop)
@@ -169,6 +238,9 @@ class CaptureService : LifecycleService() {
         private const val ACTION_STOP = "dev.bike.livesubs.STOP"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
+        private const val EXTRA_MODEL = "model"
+        private const val EXTRA_SOURCE = "source"
+        private const val NOTIFICATION_CHARS = 160
 
         private const val SILENCE_HOLD_MS = 2_000L
 
@@ -177,6 +249,9 @@ class CaptureService : LifecycleService() {
         private val _windowCount = MutableStateFlow(0)
         private val _windowSeconds = MutableStateFlow(0f)
         private val _captureError = MutableStateFlow<String?>(null)
+        private val _recognizerStatus = MutableStateFlow<RecognizerStatus?>(null)
+        private val _latency = MutableStateFlow<LatencyStats.Snapshot?>(null)
+        private val _subtitles = MutableStateFlow<SubtitleUpdate?>(null)
 
         val running: StateFlow<Boolean> = _running.asStateFlow()
         val isRunning: Boolean get() = _running.value
@@ -191,13 +266,27 @@ class CaptureService : LifecycleService() {
         /** Why the last capture attempt failed, or null. */
         val captureError: StateFlow<String?> = _captureError.asStateFlow()
 
-        fun start(context: Context, resultCode: Int, data: Intent) {
+        /** The recognizer of the current run: loading or listening. Null before the first start. */
+        val recognizerStatus: StateFlow<RecognizerStatus?> = _recognizerStatus.asStateFlow()
+
+        /** Rolling latency figures of the current run. */
+        val latency: StateFlow<LatencyStats.Snapshot?> = _latency.asStateFlow()
+
+        /** The latest subtitles of the current run. */
+        val subtitles: StateFlow<SubtitleUpdate?> = _subtitles.asStateFlow()
+
+        fun start(context: Context, resultCode: Int, data: Intent, model: WhisperModel, source: SourceLanguage) {
             _captureError.value = null
             _windowCount.value = 0
             _windowSeconds.value = 0f
+            _recognizerStatus.value = null
+            _latency.value = null
+            _subtitles.value = null
             val intent = Intent(context, CaptureService::class.java)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, data)
+                .putExtra(EXTRA_MODEL, model.name)
+                .putExtra(EXTRA_SOURCE, source.name)
             context.startForegroundService(intent)
         }
 
