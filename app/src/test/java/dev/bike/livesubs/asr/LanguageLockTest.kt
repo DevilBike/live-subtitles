@@ -38,6 +38,11 @@ class LanguageLockTest {
     }
 
     @Test
+    fun aFixedLanguageIsLockedFromTheStart() {
+        assertEquals("ko", LanguageLock(fixed = "ko").nextPassLanguage)
+    }
+
+    @Test
     fun staysLockedOnceLocked() {
         val lock = LanguageLock()
         lock.observe("es", 2_000)

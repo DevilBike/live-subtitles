@@ -100,6 +100,13 @@ class TranscriptStabilizerTest {
     }
 
     @Test
+    fun committedJapaneseHasNoSpaces() {
+        val s = TranscriptStabilizer(keepChars = 4)
+        s.update(listOf("今日", "は", "暑い").mapIndexed { i, w -> Word(w, i * 400L, i * 400L + 300, false) }, final = true)
+        assertEquals("日は暑い", s.committedText)
+    }
+
+    @Test
     fun committedTextIsTrimmedAtAWordBoundary() {
         val s = TranscriptStabilizer(keepChars = 12)
         s.update(words("aaaa bbbb cccc dddd"), final = true)

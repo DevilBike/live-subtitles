@@ -7,9 +7,14 @@ package dev.bike.livesubs.asr
  * or noisy window, so passes run with "auto" only until [confirmations] passes
  * in a row, each with at least [minSpeechMs] of speech, report the same language.
  */
-class LanguageLock(private val confirmations: Int = 2, private val minSpeechMs: Int = 1_500) {
+class LanguageLock(
+    /** A language known in advance, locked from the start. */
+    fixed: String? = null,
+    private val confirmations: Int = 2,
+    private val minSpeechMs: Int = 1_500,
+) {
 
-    var locked: String? = null
+    var locked: String? = fixed
         private set
 
     /** The most recent detection, shown while not yet locked. */

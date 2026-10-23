@@ -134,6 +134,35 @@ Java_dev_bike_livesubs_asr_WhisperNative_full(
     return result;
 }
 
+// Detects the spoken language of `samples`, choosing only among `candidates`
+// (e.g. {"ja", "ko"}). Returns the most likely candidate, or null on failure.
+JNIEXPORT jstring JNICALL
+Java_dev_bike_livesubs_asr_WhisperNative_detectLanguage(
+        JNIEnv * env, jobject, jlong ptr, jfloatArray samples, jint threads, jobjectArray candidates) {
+    whisper_context * ctx = ctx_of(ptr);
+    const jsize n = env->GetArrayLength(samples);
+    jfloat * pcm = env->GetFloatArrayElements(samples, nullptr);
+    const int mel = whisper_pcm_to_mel(ctx, pcm, n, threads);
+    env->ReleaseFloatArrayElements(samples, pcm, JNI_ABORT);
+    if (mel != 0) return nullptr;
+
+    std::vector<float> probs(whisper_lang_max_id() + 1, 0.0f);
+    if (whisper_lang_auto_detect(ctx, 0, threads, probs.data()) < 0) return nullptr;
+
+    jstring best = nullptr;
+    float best_p = -1.0f;
+    const jsize n_candidates = env->GetArrayLength(candidates);
+    for (jsize i = 0; i < n_candidates; i++) {
+        auto code = static_cast<jstring>(env->GetObjectArrayElement(candidates, i));
+        const int id = whisper_lang_id(to_string(env, code).c_str());
+        if (id >= 0 && probs[id] > best_p) {
+            best_p = probs[id];
+            best = code;
+        }
+    }
+    return best;
+}
+
 JNIEXPORT jstring JNICALL
 Java_dev_bike_livesubs_asr_WhisperNative_detectedLanguage(JNIEnv * env, jobject, jlong ctx) {
     const char * lang = whisper_lang_str(whisper_full_lang_id(ctx_of(ctx)));

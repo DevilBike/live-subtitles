@@ -24,12 +24,14 @@ import dev.bike.livesubs.R
 import dev.bike.livesubs.asr.LatencyStats
 import dev.bike.livesubs.asr.ModelStore
 import dev.bike.livesubs.asr.RecognizerStatus
+import dev.bike.livesubs.asr.SourceLanguage
 import dev.bike.livesubs.asr.SubtitleUpdate
 import dev.bike.livesubs.asr.WhisperModel
 import dev.bike.livesubs.asr.WhisperRecognizer
 import dev.bike.livesubs.audio.AudioFrame
 import dev.bike.livesubs.audio.PlaybackAudioSource
 import dev.bike.livesubs.audio.slidingWindows
+import dev.bike.livesubs.translate.MlKitTranslator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -91,7 +93,8 @@ class CaptureService : LifecycleService() {
         }
 
         val model = WhisperModel.entries.firstOrNull { it.name == intent?.getStringExtra(EXTRA_MODEL) }
-        if (model == null || !ModelStore.isReady(this, model)) {
+        val source = SourceLanguage.entries.firstOrNull { it.name == intent?.getStringExtra(EXTRA_SOURCE) }
+        if (model == null || source == null || !ModelStore.isReady(this, model, source)) {
             Log.w(TAG, "Started without a downloaded model")
             stopSelf()
             return START_NOT_STICKY
@@ -101,19 +104,22 @@ class CaptureService : LifecycleService() {
         projection = mpm.getMediaProjection(resultCode, data)?.also {
             it.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
             _running.value = true
-            onProjectionReady(it, model)
+            onProjectionReady(it, model, source)
         }
         if (projection == null) stopSelf()
 
         return START_NOT_STICKY
     }
 
-    private fun onProjectionReady(projection: MediaProjection, model: WhisperModel) {
-        Log.i(TAG, "MediaProjection ready, starting playback capture with ${model.fileName}")
+    private fun onProjectionReady(projection: MediaProjection, model: WhisperModel, source: SourceLanguage) {
+        Log.i(TAG, "MediaProjection ready, starting playback capture with ${model.fileName} for $source")
+        val translator = if (source.usesTranslator) MlKitTranslator() else null
         val recognizer = WhisperRecognizer(
             modelFile = ModelStore.modelFile(this, model),
             vadFile = ModelStore.vadFile(this),
             armArch = BuildConfig.WHISPER_ARM_ARCH,
+            source = source,
+            translator = translator,
         )
         captureJob = lifecycleScope.launch {
             launch { recognizer.status.collect { _recognizerStatus.value = it } }
@@ -142,6 +148,8 @@ class CaptureService : LifecycleService() {
             } catch (e: LinkageError) {
                 // The native library failed to load: report it rather than crash.
                 fail(e)
+            } finally {
+                translator?.close()
             }
         }
     }
@@ -231,6 +239,7 @@ class CaptureService : LifecycleService() {
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
         private const val EXTRA_MODEL = "model"
+        private const val EXTRA_SOURCE = "source"
         private const val NOTIFICATION_CHARS = 160
 
         private const val SILENCE_HOLD_MS = 2_000L
@@ -266,7 +275,7 @@ class CaptureService : LifecycleService() {
         /** The latest subtitles of the current run. */
         val subtitles: StateFlow<SubtitleUpdate?> = _subtitles.asStateFlow()
 
-        fun start(context: Context, resultCode: Int, data: Intent, model: WhisperModel) {
+        fun start(context: Context, resultCode: Int, data: Intent, model: WhisperModel, source: SourceLanguage) {
             _captureError.value = null
             _windowCount.value = 0
             _windowSeconds.value = 0f
@@ -277,6 +286,7 @@ class CaptureService : LifecycleService() {
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, data)
                 .putExtra(EXTRA_MODEL, model.name)
+                .putExtra(EXTRA_SOURCE, source.name)
             context.startForegroundService(intent)
         }
 

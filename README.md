@@ -38,13 +38,30 @@ compiles it with the Android NDK, which takes a few minutes.
   calls it "microphone", but only playback audio is used), drawing over other
   apps (for the subtitles), and the screen capture prompt each time you start.
 
+## Spoken language
+
+Pick it under **3. Spoken language**. The app is tuned for Japanese and Korean:
+
+- **Japanese or Korean (detected)**, the default, **Japanese**, or **Korean**:
+  Whisper writes down what is said in that language, and Google's on-device
+  translator (ML Kit) turns each finished sentence into English. Small
+  Whisper models are much better at transcribing Japanese and Korean than at
+  translating them, and a translator given whole sentences keeps more of the
+  meaning than one given 4-second fragments. The unfinished sentence is
+  translated too and shown in grey, and the original text is shown in small
+  print under the English, so you can tell a hearing mistake from a
+  translation mistake. Picking the language directly skips detection.
+- **Any language**: Whisper translates to English by itself, for languages
+  other than Japanese and Korean. Lower quality.
+
 ## Speech model
 
-The first time, pick a model under **3. Speech model** and tap **Download**.
-It is a one-time download from Hugging Face (whisper.cpp's quantized
-multilingual Whisper models, plus a 1 MB voice activity detection model) into
-the app's private storage. This is the only thing the app uses the internet
-for; recognition and translation then run offline on the phone.
+The first time, pick a model under **4. Speech model** and tap **Download**.
+It is a one-time download: whisper.cpp's quantized multilingual Whisper
+models and a 1 MB voice activity detection model from Hugging Face into the
+app's private storage, plus Google's Japanese and Korean translation models
+(about 30 MB each) through ML Kit. This is the only thing the app uses the
+internet for; recognition and translation then run offline on the phone.
 
 | Model | Size | Notes |
 |---|---|---|
@@ -82,7 +99,7 @@ adb logcat -s LiveSubsLatency
 ```
 
 prints a line per pass such as
-`pass=420ms lag=610ms audio=4000ms speech=2900ms lang=ja->ja committed+3 tentative=4`.
+`pass=420ms audio=4000ms speech=2900ms lang=ja->ja committed+3 tentative=4 translate=40ms lag=610ms`.
 
 ## Checking that capture works
 
@@ -163,9 +180,12 @@ spoken. These are targets; the app measures the real figures (see above).
    text, or failing that by their timestamps, and dropped. The screen shows
    tentative words immediately in a lighter colour, so the subtitles feel live
    while still settling on correct text.
-3. **One model does everything.** Whisper's `translate` task detects the
-   language, transcribes and translates to English in one pass, which avoids
-   the extra delay of a separate translation model.
+3. **Transcribe, then translate whole sentences.** For Japanese and Korean,
+   Whisper transcribes and ML Kit's on-device translator (tens of
+   milliseconds per sentence) translates each sentence once it ends, at
+   sentence punctuation or a pause; the unfinished sentence is translated as
+   a preview. For other languages, Whisper's `translate` task goes straight
+   to English in one pass.
 4. **Voice activity detection.** Silero VAD (built into whisper.cpp) checks
    each window first. Windows without speech are skipped, so the model only
    runs when someone is talking. About 0.7 s of silence after speech counts as
@@ -173,9 +193,11 @@ spoken. These are targets; the app measures the real figures (see above).
    pause, so sentences don't bleed into each other. Segments Whisper itself
    flags as "no speech" are dropped too, which stops it inventing text over
    music.
-5. **Detect language once.** Passes auto-detect the language until two in a
-   row with enough speech agree, then the language is pinned, which saves an
-   extra decoder run on every later pass. Stop and Start to detect again.
+5. **Detect language once.** Passes detect the language (choosing only
+   between Japanese and Korean in the default setting) until two in a row
+   with enough speech agree, then the language is pinned, which saves an
+   extra decoder run on every later pass. Stop and Start to detect again, or
+   pick the language to skip detection.
 6. **Small, quantized model, using the phone's fast cores.** Multilingual
    `base` (8-bit) by default, `small` (5-bit) if the phone is fast enough,
    `tiny` (8-bit) for slower phones. whisper.cpp is compiled with the NDK for

@@ -13,4 +13,6 @@ data class SubtitleUpdate(
     val tentative: String,
     /** Detected source language, e.g. "ja", or null until known. */
     val sourceLanguage: String?,
+    /** The recent original-language text, when a separate translator made the English. */
+    val sourceText: String? = null,
 )

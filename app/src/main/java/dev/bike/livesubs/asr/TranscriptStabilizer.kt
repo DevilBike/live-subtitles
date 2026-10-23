@@ -56,11 +56,12 @@ class TranscriptStabilizer(private val keepChars: Int = 1_000) {
     private fun commit(word: Word) {
         committedWords.addLast(word)
         while (committedWords.size > MAX_KEPT_WORDS) committedWords.removeFirst()
-        if (text.isNotEmpty()) text.append(' ')
+        if (text.isNotEmpty() && word.spaceBefore) text.append(' ')
         text.append(word.text)
         if (text.length > keepChars) {
+            // Cut at a space where there is one (Japanese has none).
             val cut = text.indexOf(" ", text.length - keepChars)
-            if (cut > 0) text.delete(0, cut + 1)
+            if (cut > 0) text.delete(0, cut + 1) else text.delete(0, text.length - keepChars)
         }
         committedEndMs = maxOf(committedEndMs, word.endMs)
     }
@@ -93,7 +94,7 @@ class TranscriptStabilizer(private val keepChars: Int = 1_000) {
 
     private companion object {
         const val MAX_KEPT_WORDS = 64
-        const val MAX_OVERLAP_WORDS = 6
+        const val MAX_OVERLAP_WORDS = 8
         const val MAX_SKIPPED_WORDS = 2
         /** Whisper's word timestamps are rough, so look this far back for repeats. */
         const val OVERLAP_SLACK_MS = 1_500L

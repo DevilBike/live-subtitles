@@ -35,6 +35,27 @@ class WordsFromTokensTest {
     }
 
     @Test
+    fun splitsJapaneseIntoTokensWithoutSpaces() {
+        val words = wordsFromTokens(tokens("今日", "は", "暑い", "。"), LongArray(8) { it.toLong() }, audioStartMs = 0)
+        assertEquals(listOf("今日", "は", "暑い", "。"), words.map { it.text })
+        assertEquals("今日は暑い。", words.joinText())
+    }
+
+    @Test
+    fun keepsAJapaneseCharacterSplitAcrossTokensTogether() {
+        val bytes = "猫".toByteArray()
+        val split = listOf(bytes.copyOfRange(0, 2), bytes.copyOfRange(2, 3), "だ".toByteArray())
+        val words = wordsFromTokens(split, LongArray(6), audioStartMs = 0)
+        assertEquals(listOf("猫", "だ"), words.map { it.text })
+    }
+
+    @Test
+    fun keepsKoreanWordSpacing() {
+        val words = wordsFromTokens(tokens(" 안녕", "하세요", " 여러분"), LongArray(6), audioStartMs = 0)
+        assertEquals("안녕하세요 여러분", words.joinText())
+    }
+
+    @Test
     fun dropsWhitespaceOnlyWords() {
         val words = wordsFromTokens(tokens(" ", " yes"), longArrayOf(0, 1, 1, 2), audioStartMs = 0)
         assertEquals(listOf("yes"), words.map { it.text })

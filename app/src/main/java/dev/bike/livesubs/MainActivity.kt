@@ -20,6 +20,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import dev.bike.livesubs.asr.ModelStore
 import dev.bike.livesubs.asr.RecognizerStatus
+import dev.bike.livesubs.asr.SourceLanguage
 import dev.bike.livesubs.asr.WhisperModel
 import dev.bike.livesubs.audio.AudioFrame
 import dev.bike.livesubs.audio.SlidingWindowBuffer
@@ -55,7 +56,7 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val data = result.data
             if (result.resultCode == RESULT_OK && data != null) {
-                CaptureService.start(this, result.resultCode, data, ModelStore.selected(this))
+                CaptureService.start(this, result.resultCode, data, ModelStore.selected(this), SourceLanguage.selected(this))
             }
             refreshUi()
         }
@@ -71,12 +72,21 @@ class MainActivity : AppCompatActivity() {
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
             )
         }
+        binding.languageChoice.check(radioFor(SourceLanguage.selected(this)))
+        binding.languageChoice.setOnCheckedChangeListener { _, id ->
+            SourceLanguage.entries.firstOrNull { radioFor(it) == id }?.let { SourceLanguage.select(this, it) }
+            refreshUi()
+        }
+        ModelStore.refreshTranslationState(this)
+
         binding.modelChoice.check(radioFor(ModelStore.selected(this)))
         binding.modelChoice.setOnCheckedChangeListener { _, id ->
             WhisperModel.entries.firstOrNull { radioFor(it) == id }?.let { ModelStore.select(this, it) }
             refreshUi()
         }
-        binding.downloadModel.setOnClickListener { ModelStore.startDownload(this, ModelStore.selected(this)) }
+        binding.downloadModel.setOnClickListener {
+            ModelStore.startDownload(this, ModelStore.selected(this), SourceLanguage.selected(this))
+        }
 
         binding.startStop.setOnClickListener {
             if (CaptureService.isRunning) {
@@ -126,6 +136,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showSubtitles() {
         val update = CaptureService.subtitles.value
+        binding.sourceText.text = update?.sourceText.orEmpty()
+        binding.sourceText.visibility = if (update?.sourceText.isNullOrEmpty()) View.GONE else View.VISIBLE
         if (update == null) {
             binding.subtitles.text = getString(R.string.subtitles_off)
             return
@@ -184,6 +196,13 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
+    private fun radioFor(language: SourceLanguage) = when (language) {
+        SourceLanguage.JAPANESE_OR_KOREAN -> R.id.languageJaKo
+        SourceLanguage.JAPANESE -> R.id.languageJa
+        SourceLanguage.KOREAN -> R.id.languageKo
+        SourceLanguage.ANY -> R.id.languageAny
+    }
+
     private fun radioFor(model: WhisperModel) = when (model) {
         WhisperModel.TINY -> R.id.modelTiny
         WhisperModel.BASE -> R.id.modelBase
@@ -194,22 +213,30 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshModelUi(): Boolean {
         val model = ModelStore.selected(this)
-        val ready = ModelStore.isReady(this, model)
+        val source = SourceLanguage.selected(this)
+        val ready = ModelStore.isReady(this, model, source)
         val download = ModelStore.download.value
         val downloading = download is ModelStore.Download.Running
 
         binding.modelChoice.isEnabled = !downloading
         for (m in WhisperModel.entries) findViewById<View>(radioFor(m)).isEnabled = !downloading
+        for (l in SourceLanguage.entries) findViewById<View>(radioFor(l)).isEnabled = !downloading
         binding.downloadModel.isEnabled = !downloading && !ready
         binding.downloadProgress.visibility = if (downloading) View.VISIBLE else View.GONE
         when {
+            download is ModelStore.Download.Running && download.total == 0L -> {
+                binding.downloadModel.text = getString(R.string.model_downloading_translation)
+                binding.downloadProgress.isIndeterminate = true
+            }
             download is ModelStore.Download.Running -> {
-                val percent = if (download.total > 0) (download.bytes * 100 / download.total).toInt() else 0
+                val percent = (download.bytes * 100 / download.total).toInt()
                 binding.downloadModel.text = getString(R.string.model_downloading, download.model.label(), percent)
+                binding.downloadProgress.isIndeterminate = false
                 binding.downloadProgress.setProgressCompat(percent, true)
             }
             ready -> binding.downloadModel.text = getString(R.string.model_ready, model.label())
-            else -> binding.downloadModel.text = getString(R.string.model_download, model.label(), model.approxMb)
+            else -> binding.downloadModel.text =
+                getString(R.string.model_download, ModelStore.missingMb(this, model, source))
         }
         binding.modelStatus.text = when {
             download is ModelStore.Download.Failed && download.model == model ->

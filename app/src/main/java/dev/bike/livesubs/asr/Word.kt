@@ -1,12 +1,27 @@
 package dev.bike.livesubs.asr
 
-/** One recognized English word, timed on the capture clock ([android.os.SystemClock.elapsedRealtime] ms). */
-data class Word(val text: String, val startMs: Long, val endMs: Long)
+/**
+ * One recognized word, timed on the capture clock ([android.os.SystemClock.elapsedRealtime] ms).
+ *
+ * In Japanese, and within Korean words, a "word" is a single token (often one
+ * to three characters), since the text has no spaces to split on.
+ * [spaceBefore] says whether it is separated from the previous word by a space.
+ */
+data class Word(val text: String, val startMs: Long, val endMs: Long, val spaceBefore: Boolean = true)
+
+/** Joins words back into text, with spaces only where the original had them. */
+fun List<Word>.joinText(): String = buildString {
+    for (word in this@joinText) {
+        if (isNotEmpty() && word.spaceBefore) append(' ')
+        append(word.text)
+    }
+}
 
 /**
  * Joins whisper.cpp text tokens into words. A token that starts with a space
- * begins a new word; any other token (", "'s", the rest of a split word or of a
- * split UTF-8 character) continues the current one.
+ * begins a new word. So does a token next to Japanese or Korean script, once
+ * the previous character is complete. Any other token (", "'s", the rest of a
+ * split English word or of a split UTF-8 character) continues the current word.
  *
  * [tokenTimes] holds a `t0, t1` pair per token in centiseconds from the start
  * of the pass audio, which itself began at [audioStartMs].
@@ -19,8 +34,9 @@ fun wordsFromTokens(tokenTexts: List<ByteArray>, tokenTimes: LongArray, audioSta
     var end = 0L
 
     fun flush() {
-        val text = String(bytes, Charsets.UTF_8).trim()
-        if (text.isNotEmpty()) words += Word(text, start, maxOf(start, end))
+        val raw = String(bytes, Charsets.UTF_8)
+        val text = raw.trim()
+        if (text.isNotEmpty()) words += Word(text, start, maxOf(start, end), spaceBefore = raw.startsWith(' '))
         bytes = ByteArray(0)
     }
 
@@ -28,7 +44,10 @@ fun wordsFromTokens(tokenTexts: List<ByteArray>, tokenTimes: LongArray, audioSta
         val token = tokenTexts[i]
         val t0 = audioStartMs + tokenTimes[2 * i] * 10
         val t1 = audioStartMs + tokenTimes[2 * i + 1] * 10
-        if (bytes.isEmpty() || (token.isNotEmpty() && token[0] == ' '.code.toByte())) {
+        val startsWord = bytes.isEmpty() ||
+            (token.isNotEmpty() && token[0] == ' '.code.toByte()) ||
+            (token.isNotEmpty() && endsCompleteChar(bytes) && (isCjkLead(token[0]) || endsWithCjk(bytes)))
+        if (startsWord) {
             flush()
             start = t0
             end = t1
@@ -39,6 +58,34 @@ fun wordsFromTokens(tokenTexts: List<ByteArray>, tokenTimes: LongArray, audioSta
     }
     flush()
     return words
+}
+
+/** UTF-8 lead bytes E3..ED start U+3000..U+DFFF: kana, CJK ideographs, Hangul, CJK punctuation. */
+private fun isCjkLead(b: Byte) = (b.toInt() and 0xFF) in 0xE3..0xED
+
+private fun isContinuation(b: Byte) = (b.toInt() and 0xC0) == 0x80
+
+private fun sequenceLength(lead: Byte): Int {
+    val v = lead.toInt() and 0xFF
+    return when {
+        v < 0x80 -> 1
+        v >= 0xF0 -> 4
+        v >= 0xE0 -> 3
+        else -> 2
+    }
+}
+
+/** True when [bytes] does not end in the middle of a multi-byte character. */
+private fun endsCompleteChar(bytes: ByteArray): Boolean {
+    var i = bytes.size - 1
+    while (i >= 0 && isContinuation(bytes[i])) i--
+    return i < 0 || bytes.size - i == sequenceLength(bytes[i])
+}
+
+private fun endsWithCjk(bytes: ByteArray): Boolean {
+    var i = bytes.size - 1
+    while (i >= 0 && isContinuation(bytes[i])) i--
+    return i >= 0 && isCjkLead(bytes[i])
 }
 
 /** Case and punctuation do not count when comparing words across passes. */

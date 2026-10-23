@@ -40,6 +40,45 @@
             android:layout_marginTop="8dp"
             android:text="@string/grant_overlay" />
 
+        <!-- Spoken language: decides whether Whisper translates or a separate translator does. -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/language_title"
+            android:textAppearance="?attr/textAppearanceLabelLarge" />
+
+        <RadioGroup
+            android:id="@+id/languageChoice"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp">
+
+            <RadioButton
+                android:id="@+id/languageJaKo"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/language_ja_ko" />
+
+            <RadioButton
+                android:id="@+id/languageJa"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/language_ja" />
+
+            <RadioButton
+                android:id="@+id/languageKo"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/language_ko" />
+
+            <RadioButton
+                android:id="@+id/languageAny"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/language_any" />
+        </RadioGroup>
+
         <!-- Speech model: downloaded once, then everything runs offline. -->
         <TextView
             android:layout_width="match_parent"
@@ -125,6 +164,16 @@
             android:gravity="bottom"
             android:minLines="4"
             android:textAppearance="?attr/textAppearanceBodyLarge" />
+
+        <!-- The original Japanese or Korean, to tell hearing mistakes from translation mistakes. -->
+        <TextView
+            android:id="@+id/sourceText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:alpha="0.7"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/recognizerInfo"

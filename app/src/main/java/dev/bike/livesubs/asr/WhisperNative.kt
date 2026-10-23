@@ -32,6 +32,9 @@ internal object WhisperNative {
         audioCtx: Int,
     ): Int
 
+    /** The most likely of [candidates] (codes like "ja") for [samples], or null on failure. */
+    external fun detectLanguage(ctx: Long, samples: FloatArray, threads: Int, candidates: Array<String>): String?
+
     /** Language of the last pass: the detected one if it ran with "auto". */
     external fun detectedLanguage(ctx: Long): String
     external fun segmentCount(ctx: Long): Int
