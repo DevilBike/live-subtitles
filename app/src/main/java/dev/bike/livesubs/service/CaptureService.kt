@@ -17,19 +17,34 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
 import dev.bike.livesubs.MainActivity
 import dev.bike.livesubs.R
+import dev.bike.livesubs.audio.AudioFrame
+import dev.bike.livesubs.audio.PlaybackAudioSource
+import dev.bike.livesubs.audio.slidingWindows
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 
 /**
  * Foreground service that owns the MediaProjection for as long as subtitles are on.
  *
- * Step 1 stub: it acquires the projection and shows the ongoing notification.
- * Later steps hang the pipeline off [onProjectionReady]:
- *   PlaybackAudioSource -> StreamingRecognizer -> SubtitleOverlay
+ * It captures playback audio, publishes the live level for the app's meter,
+ * and feeds overlapping windows towards the recognizer:
+ *   PlaybackAudioSource -> slidingWindows -> StreamingRecognizer (step 3) -> SubtitleOverlay (step 4)
  */
 class CaptureService : LifecycleService() {
 
     private var projection: MediaProjection? = null
+    private var captureJob: Job? = null
+    private var hearingAudio: Boolean? = null
+    private var lastLoudMs = 0L
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
@@ -52,7 +67,7 @@ class CaptureService : LifecycleService() {
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
-            buildNotification(),
+            buildNotification(getString(R.string.notification_text)),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
         )
 
@@ -67,7 +82,7 @@ class CaptureService : LifecycleService() {
         val mpm = getSystemService(MediaProjectionManager::class.java)
         projection = mpm.getMediaProjection(resultCode, data)?.also {
             it.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
-            isRunning = true
+            _running.value = true
             onProjectionReady(it)
         }
         if (projection == null) stopSelf()
@@ -76,20 +91,56 @@ class CaptureService : LifecycleService() {
     }
 
     private fun onProjectionReady(projection: MediaProjection) {
-        // TODO(step 2): PlaybackAudioSource(projection).frames() -> StreamingRecognizer
-        // TODO(step 4): SubtitleOverlay.show() and render recognizer updates
-        Log.i(TAG, "MediaProjection ready: $projection")
+        Log.i(TAG, "MediaProjection ready, starting playback capture")
+        captureJob = lifecycleScope.launch {
+            try {
+                PlaybackAudioSource(projection).frames()
+                    .onEach { onFrame(it) }
+                    .slidingWindows()
+                    // The recognizer may be slower than one hop; always hand it the newest window.
+                    .conflate()
+                    .collect { window ->
+                        // TODO(step 3): StreamingRecognizer.subtitles(windows)
+                        // TODO(step 4): SubtitleOverlay.show() and render recognizer updates
+                        _windowCount.value++
+                        _windowSeconds.value = window.durationMs / 1000f
+                    }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Playback capture failed", e)
+                _captureError.value = e.message ?: e.javaClass.simpleName
+                stopSelf()
+            }
+        }
+    }
+
+    private fun onFrame(frame: AudioFrame) {
+        val db = frame.levelDb()
+        _levelDb.value = db
+        val now = frame.startMs
+        if (db > AudioFrame.SILENCE_DB) lastLoudMs = now
+        // Hysteresis so the notification only changes on real transitions, not every quiet frame.
+        val hearing = now - lastLoudMs < SILENCE_HOLD_MS
+        if (hearing != hearingAudio) {
+            hearingAudio = hearing
+            val text = getString(if (hearing) R.string.notification_hearing else R.string.notification_silent)
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+        }
     }
 
     override fun onDestroy() {
+        // Stop reading before the projection goes away, so a normal stop is not reported as a failure.
+        captureJob?.cancel()
         projection?.unregisterCallback(projectionCallback)
         projection?.stop()
         projection = null
-        isRunning = false
+        _running.value = false
+        _levelDb.value = AudioFrame.MIN_DB
         super.onDestroy()
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(text: String): Notification {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, getString(R.string.channel_name), NotificationManager.IMPORTANCE_LOW)
@@ -103,7 +154,8 @@ class CaptureService : LifecycleService() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_subtitles)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text))
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
             .setContentIntent(openApp)
             .addAction(0, getString(R.string.stop), stop)
             .setOngoing(true)
@@ -118,11 +170,31 @@ class CaptureService : LifecycleService() {
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
 
-        @Volatile
-        var isRunning = false
-            private set
+        private const val SILENCE_HOLD_MS = 2_000L
+
+        private val _running = MutableStateFlow(false)
+        private val _levelDb = MutableStateFlow(AudioFrame.MIN_DB)
+        private val _windowCount = MutableStateFlow(0)
+        private val _windowSeconds = MutableStateFlow(0f)
+        private val _captureError = MutableStateFlow<String?>(null)
+
+        val running: StateFlow<Boolean> = _running.asStateFlow()
+        val isRunning: Boolean get() = _running.value
+
+        /** Loudness of the latest 100 ms frame in dBFS, for the level meter. */
+        val levelDb: StateFlow<Float> = _levelDb.asStateFlow()
+
+        /** How many windows the buffer has produced, and the length of the latest one. */
+        val windowCount: StateFlow<Int> = _windowCount.asStateFlow()
+        val windowSeconds: StateFlow<Float> = _windowSeconds.asStateFlow()
+
+        /** Why the last capture attempt failed, or null. */
+        val captureError: StateFlow<String?> = _captureError.asStateFlow()
 
         fun start(context: Context, resultCode: Int, data: Intent) {
+            _captureError.value = null
+            _windowCount.value = 0
+            _windowSeconds.value = 0f
             val intent = Intent(context, CaptureService::class.java)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, data)

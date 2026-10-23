@@ -9,8 +9,15 @@
     <string name="stop">Stop</string>
     <string name="status_needs_permissions">Grant both permissions above to continue.</string>
     <string name="status_ready">Ready. Tap Start, then choose \"Entire screen\" (or the app you want) and Start.</string>
-    <string name="status_running">Running. Subtitles are not wired up yet in this build.</string>
+    <string name="status_running">Running. Play a video and watch the meter below. Subtitles are not wired up yet in this build.</string>
+    <string name="status_failed">Audio capture failed: %1$s</string>
+    <string name="level_title">Captured audio</string>
+    <string name="level_off">Not capturing.</string>
+    <string name="level_hearing">Hearing audio (%1$.0f dB). Buffer: %2$.1f s windows, %3$d sent.</string>
+    <string name="level_silent">Silence. If something is playing, that app blocks capture (see README).</string>
     <string name="channel_name">Live subtitles</string>
     <string name="notification_title">Live subtitles are on</string>
     <string name="notification_text">Listening to audio playing on this phone</string>
+    <string name="notification_hearing">Hearing audio</string>
+    <string name="notification_silent">No sound yet. Some apps block capture.</string>
 </resources>

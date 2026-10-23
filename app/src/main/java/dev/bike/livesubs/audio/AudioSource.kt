@@ -2,7 +2,7 @@ package dev.bike.livesubs.audio
 
 import kotlinx.coroutines.flow.Flow
 
-/** Step 2 implements this with AudioPlaybackCapture on top of the service's MediaProjection. */
+/** A live source of 100 ms [AudioFrame]s. [PlaybackAudioSource] is the real one. */
 interface AudioSource {
     fun frames(): Flow<AudioFrame>
 }
