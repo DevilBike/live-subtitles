@@ -11,12 +11,19 @@ import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import dev.bike.livesubs.audio.AudioFrame
 import dev.bike.livesubs.databinding.ActivityMainBinding
 import dev.bike.livesubs.service.CaptureService
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 
 /**
  * The only screen: walks the user through the three permissions the app needs,
- * then starts or stops [CaptureService].
+ * then starts or stops [CaptureService] and shows a live level meter of the
+ * captured audio, so you can tell capture works before subtitles exist.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -65,6 +72,31 @@ class MainActivity : AppCompatActivity() {
                 requestScreenCapture.launch(mpm.createScreenCaptureIntent())
             }
         }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch { CaptureService.running.collect { refreshUi() } }
+                launch { CaptureService.captureError.collect { refreshUi() } }
+                combine(
+                    CaptureService.running,
+                    CaptureService.levelDb,
+                    CaptureService.windowCount,
+                ) { running, db, windows -> Triple(running, db, windows) }
+                    .collect { (running, db, windows) -> showLevel(running, db, windows) }
+            }
+        }
+    }
+
+    private fun showLevel(running: Boolean, db: Float, windows: Int) {
+        // Map -60..0 dBFS onto the bar; quieter than that reads as empty.
+        val percent = ((db - AudioFrame.SILENCE_DB) / -AudioFrame.SILENCE_DB * 100).toInt().coerceIn(0, 100)
+        binding.level.setProgressCompat(if (running) percent else 0, false)
+        binding.levelText.text = when {
+            !running -> getString(R.string.level_off)
+            db > AudioFrame.SILENCE_DB ->
+                getString(R.string.level_hearing, db, CaptureService.windowSeconds.value, windows)
+            else -> getString(R.string.level_silent)
+        }
     }
 
     override fun onResume() {
@@ -87,12 +119,12 @@ class MainActivity : AppCompatActivity() {
 
         binding.startStop.isEnabled = audioOk && overlayOk
         binding.startStop.setText(if (CaptureService.isRunning) R.string.stop else R.string.start)
-        binding.status.setText(
-            when {
-                CaptureService.isRunning -> R.string.status_running
-                audioOk && overlayOk -> R.string.status_ready
-                else -> R.string.status_needs_permissions
-            }
-        )
+        val error = CaptureService.captureError.value
+        binding.status.text = when {
+            CaptureService.isRunning -> getString(R.string.status_running)
+            error != null -> getString(R.string.status_failed, error)
+            audioOk && overlayOk -> getString(R.string.status_ready)
+            else -> getString(R.string.status_needs_permissions)
+        }
     }
 }

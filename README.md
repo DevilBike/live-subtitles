@@ -4,14 +4,14 @@ A personal Android app that shows live English subtitles over anything playing
 on the phone (videos, streams, calls in a browser). It detects the spoken
 language by itself and runs entirely on the device, with no cloud.
 
-**Status:** step 1 of 4. The app asks for the permissions it needs and starts a
-foreground service that holds the capture session. Nothing is transcribed yet.
+**Status:** step 2 of 4. The app captures the phone's playback audio and shows
+a live level meter, so you can check capture works. Nothing is transcribed yet.
 
 | Step | What | State |
 |---|---|---|
 | 1 | Project, permissions, foreground service | done |
-| 2 | Capture the phone's playback audio (AudioPlaybackCapture) | next |
-| 3 | On-device speech recognition and translation | |
+| 2 | Capture the phone's playback audio (AudioPlaybackCapture) | done |
+| 3 | On-device speech recognition and translation | next |
 | 4 | Floating subtitle overlay, testing, release APK | |
 
 ## Getting the APK
@@ -32,9 +32,34 @@ To build it yourself, open the folder in Android Studio and press Run, or run
   calls it "microphone", but only playback audio is used), drawing over other
   apps (for the subtitles), and the screen capture prompt each time you start.
 
-Some apps block having their audio captured, and those will stay silent to
-this app. That is common for DRM streaming apps; most video players, browsers
-and YouTube allow it.
+## Checking that capture works
+
+Tap **Start subtitles**, accept the screen capture prompt, then play a video in
+another app and come back. The **Captured audio** meter moves with the sound,
+and the line under it says "Hearing audio" with the level and how many buffer
+windows have been produced. The notification also switches between "Hearing
+audio" and "No sound yet". If the meter stays empty while something is
+clearly playing, that app blocks capture.
+
+## Apps that block capture
+
+Android lets each app decide whether its audio can be captured. Blocked apps
+are not muted, they just reach this app as silence.
+
+- **Allowed by default:** any app targeting Android 10 or newer that plays
+  media, game or uncategorised audio and has not opted out. That covers most
+  browsers (Chrome, Firefox), most video players (VLC, MX Player) and most
+  social and video apps.
+- **Blocked by the app:** apps that set `allowAudioPlaybackCapture="false"` or
+  a "capture by none/system only" policy. This is common for paid streaming
+  and DRM apps, for example Netflix, Disney+, Prime Video, and many music
+  apps such as Spotify. Their web versions in a browser often work instead.
+- **Blocked by Android:** apps built for Android 9 or older, and all call and
+  voice chat audio (phone calls, WhatsApp/Meet/Zoom calls), which is never
+  capturable by other apps.
+
+App behaviour changes between versions, so treat the named apps as typical
+rather than certain. The meter above is the quickest way to check one.
 
 ## Code layout
 
@@ -42,7 +67,8 @@ and YouTube allow it.
 app/src/main/java/dev/bike/livesubs/
   MainActivity.kt            permission walkthrough, start/stop
   service/CaptureService.kt  foreground service, owns the MediaProjection
-  audio/                     AudioSource -> 100 ms AudioFrames (step 2)
+  audio/                     PlaybackAudioSource -> 100 ms AudioFrames,
+                             SlidingWindowBuffer -> overlapping AudioWindows
   asr/                       StreamingRecognizer -> SubtitleUpdate (step 3)
   translate/                 optional separate translation stage
   overlay/                   SubtitleOverlay window (step 4)
@@ -51,8 +77,15 @@ app/src/main/java/dev/bike/livesubs/
 The pipeline is a chain of Kotlin Flows running inside the service:
 
 ```
-AudioPlaybackCapture -> AudioFrame (100 ms) -> StreamingRecognizer -> SubtitleUpdate -> overlay
+AudioPlaybackCapture -> AudioFrame (100 ms) -> AudioWindow (last 4 s, every 0.5 s)
+  -> StreamingRecognizer -> SubtitleUpdate -> overlay
 ```
+
+Audio is captured as 16 kHz mono 16-bit PCM (Android does the resampling and
+downmix) and converted to floats, which is Whisper's input format. The
+AudioRecord buffer is kept to a few frames so capture adds very little delay.
+Windows are conflated before the recognizer: if a pass takes longer than
+0.5 s, it gets the newest window next instead of a backlog.
 
 ## Latency plan: as close to live as possible
 
