@@ -98,23 +98,18 @@ Java_dev_bike_livesubs_asr_WhisperNative_vadProbs(JNIEnv * env, jobject, jlong v
 JNIEXPORT jint JNICALL
 Java_dev_bike_livesubs_asr_WhisperNative_full(
         JNIEnv * env, jobject, jlong ctx, jfloatArray samples, jstring language, jboolean translate,
-        jint threads, jint audio_ctx, jbyteArray prompt_utf8) {
+        jint threads, jint audio_ctx) {
     std::string lang = to_string(env, language);
-    std::string prompt;
-    if (prompt_utf8 != nullptr) {
-        const jsize len = env->GetArrayLength(prompt_utf8);
-        prompt.resize(len);
-        env->GetByteArrayRegion(prompt_utf8, 0, len, reinterpret_cast<jbyte *>(prompt.data()));
-    }
 
     whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     params.n_threads        = threads;
     params.translate        = translate;
     params.language         = lang.empty() ? "auto" : lang.c_str();
     params.detect_language  = false;
-    // Each pass is independent; continuity comes from the prompt of committed text.
+    // Each pass is independent, with no prompt: the 4 s window is context
+    // enough, and small models prompted with earlier text tend to repeat it
+    // instead of transcribing the new audio.
     params.no_context       = true;
-    params.initial_prompt   = prompt.empty() ? nullptr : prompt.c_str();
     params.no_timestamps    = false;
     params.token_timestamps = true;
     params.single_segment   = false;

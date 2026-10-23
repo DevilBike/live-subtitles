@@ -40,3 +40,31 @@ class WordsFromTokensTest {
         assertEquals(listOf("yes"), words.map { it.text })
     }
 }
+
+class CollapseRepeatsTest {
+
+    private fun words(text: String) = text.split(' ').mapIndexed { i, w -> Word(w, i * 100L, i * 100L + 80) }
+    private fun List<Word>.text() = joinToString(" ") { it.text }
+
+    @Test
+    fun collapsesARepeatedSentence() {
+        val w = words("I'm going to the bathroom. I'm going to the bathroom. I'm going to the bathroom.")
+        assertEquals("I'm going to the bathroom.", collapseRepeats(w).text())
+    }
+
+    @Test
+    fun keepsWhatFollowsTheLoop() {
+        assertEquals("thank you very much", collapseRepeats(words("thank you thank you very much")).text())
+    }
+
+    @Test
+    fun leavesSingleWordRepeatsAlone() {
+        assertEquals("no no no", collapseRepeats(words("no no no")).text())
+    }
+
+    @Test
+    fun leavesNormalTextAlone() {
+        val w = words("the cat sat on the mat")
+        assertEquals(w, collapseRepeats(w))
+    }
+}

@@ -43,3 +43,25 @@ fun wordsFromTokens(tokenTexts: List<ByteArray>, tokenTimes: LongArray, audioSta
 
 /** Case and punctuation do not count when comparing words across passes. */
 internal fun Word.key(): String = text.filter { it.isLetterOrDigit() }.lowercase()
+
+/**
+ * Removes immediate repeats of a phrase of [minWords] or more words, keeping
+ * the first copy: "I'm going to the bathroom. I'm going to the bathroom."
+ * becomes one sentence. Whisper falls into such loops on unclear audio, and
+ * without them a stuck pass would keep committing the same line.
+ */
+fun collapseRepeats(words: List<Word>, minWords: Int = 2): List<Word> {
+    val out = ArrayList<Word>(words.size)
+    for (word in words) {
+        out += word
+        // Does the end of `out` now hold the same phrase twice in a row?
+        for (n in out.size / 2 downTo minWords) {
+            val first = out.size - 2 * n
+            if ((0 until n).all { out[first + it].key() == out[first + n + it].key() }) {
+                repeat(n) { out.removeAt(out.size - 1) }
+                break
+            }
+        }
+    }
+    return out
+}

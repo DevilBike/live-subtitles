@@ -30,7 +30,6 @@ internal object WhisperNative {
         translate: Boolean,
         threads: Int,
         audioCtx: Int,
-        promptUtf8: ByteArray?,
     ): Int
 
     /** Language of the last pass: the detected one if it ran with "auto". */

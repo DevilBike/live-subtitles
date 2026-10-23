@@ -22,9 +22,6 @@ class TranscriptStabilizer(private val keepChars: Int = 1_000) {
     /** The most recent committed text. Older text is trimmed from the front past [keepChars]. */
     val committedText: String get() = text.toString()
 
-    /** The last few committed words, used to prompt the next pass for continuity. */
-    fun prompt(maxWords: Int = 24): String = committedWords.takeLast(maxWords).joinToString(" ") { it.text }
-
     /**
      * Adds one pass's words (all words recognized in the window, in order).
      *

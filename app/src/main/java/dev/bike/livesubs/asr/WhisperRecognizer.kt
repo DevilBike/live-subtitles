@@ -29,8 +29,8 @@ sealed interface RecognizerStatus {
  *  1. VAD (Silero): windows without speech are skipped, and a pause in speech
  *     makes the pass final, committing the sentence and starting the next
  *     window cleanly after the pause.
- *  2. whisper.cpp over the window, with the encoder shrunk to the window length
- *     and the last committed words as a prompt.
+ *  2. whisper.cpp over the window, with the encoder shrunk to the window length.
+ *     Phrases the model loops on ("so so so", a sentence twice) are collapsed.
  *  3. [TranscriptStabilizer], which splits the words into committed and tentative.
  *
  * The language is auto-detected on the first speech, then pinned ([LanguageLock]).
@@ -112,25 +112,25 @@ class WhisperRecognizer(
             val final = activity.trailingSilenceMs >= END_OF_SPEECH_MS
 
             val lang = language.nextPassLanguage
-            val prompt = stabilizer.prompt().takeIf { it.isNotEmpty() }?.toByteArray()
             val passStart = SystemClock.elapsedRealtime()
-            val rc = WhisperNative.full(ctx, samples, lang, true, threads, audioCtxFor(samples.size), prompt)
+            val rc = WhisperNative.full(ctx, samples, lang, true, threads, audioCtxFor(samples.size))
             val passMs = SystemClock.elapsedRealtime() - passStart
             if (rc != 0) {
                 Log.w(TAG, "whisper_full failed with $rc")
                 return null
             }
 
-            val words = ArrayList<Word>()
+            val recognized = ArrayList<Word>()
             for (s in 0 until WhisperNative.segmentCount(ctx)) {
                 // Whisper invents text for music and noise; it flags such segments itself.
                 if (WhisperNative.segmentNoSpeechProb(ctx, s) > NO_SPEECH_THRESHOLD) continue
-                words += wordsFromTokens(
+                recognized += wordsFromTokens(
                     WhisperNative.segmentTokenTexts(ctx, s).asList(),
                     WhisperNative.segmentTokenTimes(ctx, s),
                     audioStartMs,
                 )
             }
+            val words = collapseRepeats(recognized)
             if (lang == LanguageLock.AUTO && words.isNotEmpty()) {
                 language.observe(WhisperNative.detectedLanguage(ctx), activity.speechMs)
             }
@@ -151,6 +151,7 @@ class WhisperRecognizer(
                 "pass=${passMs}ms lag=${lagMs}ms audio=${samples.size * 1000L / AudioFrame.SAMPLE_RATE}ms " +
                     "speech=${activity.speechMs}ms lang=$lang->${language.locked ?: language.latest} " +
                     "committed+${result.newlyCommitted.size} tentative=${result.tentative.size}" +
+                    (if (recognized.size > words.size) " dropped-repeats=${recognized.size - words.size}" else "") +
                     (if (final) " end-of-speech" else ""),
             )
             return SubtitleUpdate(

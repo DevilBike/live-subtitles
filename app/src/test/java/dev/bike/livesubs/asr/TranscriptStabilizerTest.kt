@@ -100,13 +100,6 @@ class TranscriptStabilizerTest {
     }
 
     @Test
-    fun promptIsTheLastCommittedWords() {
-        val s = TranscriptStabilizer()
-        s.update(words("a b c d e"), final = true)
-        assertEquals("c d e", s.prompt(maxWords = 3))
-    }
-
-    @Test
     fun committedTextIsTrimmedAtAWordBoundary() {
         val s = TranscriptStabilizer(keepChars = 12)
         s.update(words("aaaa bbbb cccc dddd"), final = true)
